@@ -1,0 +1,663 @@
+---
+title: "The International Student's Balancing Act"
+subtitle: "Academic expectations, housing costs and study access in the DATA2002/2902 class survey"
+
+author:
+  - name: "520406751"
+  - name: "530802916"
+  - name: "540577778"
+  - name: "550331445"
+  - name: "550085605"
+  - name: "560113178"
+
+date: "`r Sys.Date()`"
+bibliography: references.bib
+
+format:
+  html:
+    embed-resources: true
+    code-fold: true
+    table-of-contents: true
+    number-sections: true
+    theme: cyborg
+    html-math-method: katex
+    fig-cap-location: bottom
+
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+# Load packages used for data wrangling, tables, plots and formatting.
+library(tidyverse)
+library(janitor)
+library(knitr)
+library(scales)
+
+# Set shared defaults, then define the high-contrast dark theme used by all figures.
+theme_set(
+  theme_minimal(base_size = 12) +
+    theme(
+      plot.title.position = "plot",
+      plot.caption = element_text(color = "grey35", hjust = 0),
+      panel.grid.minor = element_blank(),
+      legend.position = "bottom"
+    )
+)
+
+# Reusable dark figure theme for every statistical figure.
+theme_report_dark <- theme_minimal(base_size = 12) +
+  theme(
+    plot.background = element_rect(fill = "#101B2B", color = NA),
+    panel.background = element_rect(fill = "#101B2B", color = NA),
+    panel.grid.major.y = element_line(color = "#33445B", linewidth = 0.35),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(),
+    axis.text = element_text(color = "#E9F0F6"),
+    axis.title = element_text(color = "#E9F0F6"),
+    legend.background = element_rect(fill = "#101B2B", color = NA),
+    legend.key = element_rect(fill = "#101B2B", color = NA),
+    legend.text = element_text(color = "#E9F0F6"),
+    legend.title = element_text(color = "#E9F0F6"),
+    plot.caption = element_text(color = "#B7C6D4", hjust = 0),
+    legend.position = "bottom"
+  )
+
+# Avoid scientific notation in reported numerical results.
+options(scipen = 999)
+
+# Format p-values consistently while retaining detail for small values.
+p_fmt <- function(p) {
+  if (p < 0.001) formatC(p, format = "f", digits = 4) else formatC(p, format = "f", digits = 3)
+}
+
+# The CSV is the sole numerical source for the report.
+survey_raw <- read_csv("DATA2X02_2026_2_survey_clean.csv", show_col_types = FALSE)
+
+# Select and rename the six survey variables used in the report.
+survey <- survey_raw |>
+  transmute(
+    student_type = factor(
+      .data[["Are you an International or Domestic student?"]],
+      levels = c("International", "Domestic")
+    ),
+    target_grade = factor(
+      .data[["What grade do you hope to get in DATA2002/2902?"]],
+      levels = c("P", "CR", "D", "HD"), ordered = TRUE
+    ),
+    commute_min = .data[["On average, how long does it take you to get to campus? (mins) [1 direction]"]],
+    pays_rent = factor(.data[["Do you pay rent?"]], levels = c("yes", "no")),
+    weekly_rent = .data[["On average, how much rent do you pay per week? (dollars)"]],
+    revision_delivery = factor(
+      .data[["Which delivery of the Revision Lecture did you CHOOSE this week?"]],
+      levels = c("Live on campus", "Live-stream", "Recording", "Other")
+    )
+  )
+
+# Calculate cohort counts used in the report introduction.
+n_total <- nrow(survey)
+n_international <- sum(survey$student_type == "International", na.rm = TRUE)
+n_domestic <- sum(survey$student_type == "Domestic", na.rm = TRUE)
+focal_missing <- survey |>
+  summarise(across(everything(), ~ sum(is.na(.x))))
+
+# Keep complete status/grade responses for the RQ1 independence test.
+rq1_data <- survey |>
+  filter(!is.na(student_type), !is.na(target_grade))
+
+# Calculate observed counts, within-group proportions and Pearson's chi-squared test.
+rq1_tab <- table(rq1_data$student_type, rq1_data$target_grade)
+rq1_prop <- prop.table(rq1_tab, margin = 1)
+rq1_test <- chisq.test(rq1_tab, correct = FALSE)
+rq1_expected <- rq1_test$expected
+rq1_min_expected <- min(rq1_expected)
+
+# Convert the contingency table into plotting data and label combined D/HD shares.
+rq1_plot_data <- as.data.frame(rq1_tab) |>
+  as_tibble() |>
+  rename(student_type = Var1, target_grade = Var2, n = Freq) |>
+  group_by(student_type) |>
+  mutate(proportion = n / sum(n)) |>
+  ungroup()
+
+rq1_high_grade <- rq1_plot_data |>
+  filter(target_grade %in% c("D", "HD")) |>
+  summarise(proportion = sum(proportion), .by = student_type) |>
+  mutate(label = paste0("D/HD: ", percent(proportion, accuracy = 0.1)))
+
+# RQ2 objects. The binary screening answer defines renter eligibility.
+# Identify contradictory rent answers for the pilot data-quality discussion.
+rq2_zero_inconsistent <- survey |>
+  filter(pays_rent == "yes", weekly_rent == 0)
+
+rq2_no_positive <- survey |>
+  filter(pays_rent == "no", weekly_rent > 0)
+
+# Apply the pre-specified renter rule while retaining plausible high rents.
+# Keep explicit rent payers with finite positive rent and usable status.
+rq2_data <- survey |>
+  filter(
+    pays_rent == "yes",
+    is.finite(weekly_rent),
+    weekly_rent > 0,
+    !is.na(student_type)
+  )
+
+# Calculate group summaries and a Combined row from all eligible observations.
+rq2_summary <- rq2_data |>
+  group_by(student_type) |>
+  summarise(
+    n = n(),
+    mean = mean(weekly_rent),
+    median = median(weekly_rent),
+    sd = sd(weekly_rent),
+    q1 = quantile(weekly_rent, 0.25),
+    q3 = quantile(weekly_rent, 0.75),
+    iqr = IQR(weekly_rent),
+    minimum = min(weekly_rent),
+    maximum = max(weekly_rent),
+    .groups = "drop"
+  ) |>
+  bind_rows(
+    rq2_data |>
+      summarise(
+        student_type = "Combined",
+        n = n(), mean = mean(weekly_rent), median = median(weekly_rent),
+        sd = sd(weekly_rent), q1 = quantile(weekly_rent, 0.25),
+        q3 = quantile(weekly_rent, 0.75), iqr = IQR(weekly_rent),
+        minimum = min(weekly_rent), maximum = max(weekly_rent)
+      )
+  )
+
+# Run Welch's test without assuming equal population variances.
+rq2_test <- t.test(
+  weekly_rent ~ student_type,
+  data = rq2_data,
+  alternative = "two.sided",
+  var.equal = FALSE
+)
+
+rq2_int_mean <- rq2_summary$mean[rq2_summary$student_type == "International"]
+rq2_dom_mean <- rq2_summary$mean[rq2_summary$student_type == "Domestic"]
+rq2_difference <- rq2_int_mean - rq2_dom_mean
+
+# Calculate the proportion reporting rent within each student-status group.
+rq2_paying_context <- survey |>
+  count(student_type, pays_rent) |>
+  group_by(student_type) |>
+  mutate(percent = n / sum(n)) |>
+  ungroup()
+
+# RQ3 objects. Remote combines modes that do not require physical campus access.
+survey <- survey |>
+  mutate(
+    delivery_location = case_when(
+      revision_delivery == "Live on campus" ~ "On-campus",
+      revision_delivery %in% c("Live-stream", "Recording") ~ "Remote",
+      TRUE ~ NA_character_
+    )
+  )
+
+# Count excluded "Other" responses among International students.
+rq3_delivery_counts <- survey |>
+  filter(student_type == "International") |>
+  count(revision_delivery)
+
+rq3_excluded <- rq3_delivery_counts |>
+  filter(revision_delivery == "Other") |>
+  summarise(n = sum(n)) |>
+  pull(n)
+
+# Audit the RQ3 sample at each analysis-specific exclusion stage.
+rq3_international <- survey |> filter(student_type == "International")
+rq3_n_international <- nrow(rq3_international)
+rq3_n_other <- sum(rq3_international$revision_delivery == "Other", na.rm = TRUE)
+rq3_n_missing_delivery <- sum(is.na(rq3_international$revision_delivery))
+rq3_n_invalid_commute <- rq3_international |>
+  filter(!is.na(delivery_location)) |>
+  summarise(n = sum(!is.finite(commute_min) | commute_min < 0)) |>
+  pull(n)
+
+# Retain International respondents with interpretable delivery and nonnegative commutes.
+# Recode delivery by physical access, then keep usable International commutes.
+rq3_data <- survey |>
+  filter(
+    student_type == "International",
+    !is.na(delivery_location),
+    is.finite(commute_min),
+    commute_min >= 0
+  ) |>
+  mutate(
+    delivery_location = factor(
+      delivery_location,
+      levels = c("Remote", "On-campus")
+    )
+  )
+
+# Calculate group summaries and a Combined row from all included commutes.
+rq3_summary <- rq3_data |>
+  group_by(delivery_location) |>
+  summarise(
+    n = n(),
+    mean = mean(commute_min),
+    median = median(commute_min),
+    sd = sd(commute_min),
+    iqr = IQR(commute_min),
+    minimum = min(commute_min),
+    maximum = max(commute_min),
+    .groups = "drop"
+  ) |>
+  bind_rows(
+    rq3_data |>
+      summarise(
+        delivery_location = "Combined",
+        n = n(), mean = mean(commute_min), median = median(commute_min),
+        sd = sd(commute_min), iqr = IQR(commute_min),
+        minimum = min(commute_min), maximum = max(commute_min)
+      )
+  )
+
+rq3_n_included <- nrow(rq3_data)
+
+```
+
+# Introduction
+
+IDP Education supports international students with study-abroad advice, accommodation and transition support [@idp2026services; @idp2026essentials]. Using the Semester 2 2026 DATA2002/2902 class survey, this report explores academic expectations, rent and revision-lecture access among International and Domestic students.
+
+The survey received `r n_total` voluntary responses from a cohort of more than 1,300 students [@data2002edcohort]. As students chose whether to participate, the sample is not random and the results should be treated as exploratory rather than representative of international students more broadly.
+
+# Data preparation and survey limitations
+
+We kept the variables needed for the three research questions and cleaned each analysis separately so that an unusable response to one question did not discard otherwise valid data. For RQ3, Recording and Live-stream were grouped as Remote, while Live on campus was treated as On-campus.
+
+```{r}
+#| label: data-wrangling
+#| output: false
+
+# Load the survey CSV.
+survey_raw <- read_csv("DATA2X02_2026_2_survey_clean.csv", show_col_types = FALSE)
+
+# Keep only report variables and give them readable names.
+survey <- survey_raw |>
+  transmute(
+    student_type = `Are you an International or Domestic student?`,
+    target_grade = `What grade do you hope to get in DATA2002/2902?`,
+    commute_min = `On average, how long does it take you to get to campus? (mins) [1 direction]`,
+    pays_rent = `Do you pay rent?`,
+    weekly_rent = `On average, how much rent do you pay per week? (dollars)`,
+    revision_delivery = `Which delivery of the Revision Lecture did you CHOOSE this week?`
+  ) |>
+  # Set category order and derive the physical-access grouping used in RQ3.
+  mutate(
+    student_type = factor(student_type, levels = c("International", "Domestic")),
+    target_grade = factor(target_grade, levels = c("P", "CR", "D", "HD"), ordered = TRUE),
+    pays_rent = factor(pays_rent, levels = c("yes", "no")),
+    revision_delivery = factor(
+      revision_delivery,
+      levels = c("Live on campus", "Live-stream", "Recording", "Other")
+    ),
+    delivery_location = case_when(
+      revision_delivery == "Live on campus" ~ "On-campus",
+      revision_delivery %in% c("Live-stream", "Recording") ~ "Remote",
+      TRUE ~ NA_character_
+    )
+  )
+```
+
+Because participation was voluntary, non-response bias is possible if respondents differ from non-respondents. Measurement bias is also possible because some questions are ambiguous or self-reported.
+
+Rent showed this clearly: `r nrow(rq2_zero_inconsistent)` respondents answered Yes but entered $0, while `r nrow(rq2_no_positive)` answered No but entered a positive amount. The survey also does not define whose rent is reported or what it includes. A better version would ask for the respondent's own weekly rent contribution only after a Yes response. RQ2 therefore keeps only Yes responses with finite positive rent.
+
+# Results
+
+## Academic expectations
+
+**Is desired grade associated with student status (International or Domestic)?**
+
+International students can face unfamiliar academic expectations and practices [@smithkhawaja2011]. For IDP, grade aspirations may help guide academic-transition support.
+
+```{r}
+#| label: fig-rq1
+#| fig-cap: "Desired-grade distributions within International and Domestic respondents. Percentages are calculated separately within each status group."
+#| fig-width: 8
+#| fig-height: 4.6
+
+# Show within-status grade distributions rather than raw group counts.
+ggplot(rq1_plot_data, aes(x = student_type, y = proportion, fill = target_grade)) +
+  geom_col(
+    width = 0.68, color = "#101B2B", linewidth = 0.7,
+    position = position_stack(reverse = TRUE)
+  ) +
+  geom_text(
+    aes(label = if_else(proportion >= 0.06, percent(proportion, accuracy = 0.1), "")),
+    position = position_stack(vjust = 0.5, reverse = TRUE),
+    color = "#07111F", fontface = "bold", size = 3.6
+  ) +
+  geom_text(
+    data = rq1_high_grade,
+    aes(x = student_type, y = 1.045, label = label),
+    inherit.aes = FALSE,
+    color = "#F4F8FB", fontface = "bold", size = 3.7
+  ) +
+  scale_y_continuous(labels = label_percent(), expand = expansion(mult = c(0, 0.10))) +
+  scale_fill_manual(
+    values = c("P" = "#F4D35E", "CR" = "#EE964B", "D" = "#55C1FF", "HD" = "#6FE3C1"),
+    breaks = c("P", "CR", "D", "HD")
+  ) +
+  coord_cartesian(clip = "off") +
+  labs(x = NULL, y = "Within-group proportion", fill = "Desired grade") +
+  theme_report_dark
+```
+
+@fig-rq1 shows that D and HD are the most common targets for both groups, although the distributions differ.
+
+**H - Hypotheses**
+
+$H_0$: status and desired grade are independent.
+
+$H_1$: status and desired grade are associated.
+
+```{r}
+#| label: rq1-test-code
+
+rq1_test <- chisq.test(rq1_tab, correct = FALSE)
+rq1_expected <- rq1_test$expected
+```
+
+**A — Assumptions** Each response is treated as independent, although repeated submissions cannot be verified. All expected counts exceed 5 (minimum = `r round(min(rq1_expected), 2)`), satisfying Cochran's rule.
+
+**T - Test statistic** Pearson chi-squared statistic = `r round(unname(rq1_test$statistic), 3)`, with `r unname(rq1_test$parameter)` degrees of freedom.
+
+**P - p-value** $p =$ `r p_fmt(rq1_test$p.value)`. At the 5% level, there is evidence that student status and desired grade are associated.
+
+**C - Conclusion** Both groups reported high aspirations: `r percent(sum(rq1_prop["International", c("D", "HD")]), accuracy = 0.1)` of International and `r percent(sum(rq1_prop["Domestic", c("D", "HD")]), accuracy = 0.1)` of Domestic respondents target D/HD. Desired grade reflects aspiration, not ability, and voluntary sampling limits generalisation. For IDP, this points more toward support with adjustment than concerns about low ambition.
+
+## Housing pressure
+
+**Among students who report paying rent, do International and Domestic students report different mean weekly rents?**
+
+Australian research links housing insecurity and unaffordability with anxiety about study among international students [@hastings2023]. For IDP, rent differences may show where budgeting and accommodation support is most useful.
+
+```{r}
+#| label: rq2-data-code
+
+# Keep respondents who clearly reported paying a positive weekly rent
+rq2_data <- survey |>
+  filter(
+    pays_rent == "yes",
+    is.finite(weekly_rent),
+    weekly_rent > 0,
+    !is.na(student_type)
+  )
+```
+
+```{r}
+#| label: fig-rq2
+#| fig-cap: "Reported weekly rent by student status among rent-paying respondents. Points show individual responses, boxes show the median and interquartile range, and diamonds show group means."
+#| fig-width: 8
+#| fig-height: 5
+
+# Fix jitter positions so the figure is reproducible
+set.seed(2002)
+
+ggplot(
+  rq2_data,
+  aes(x = student_type, 
+      y = weekly_rent, 
+      color = student_type)
+  ) +
+  # Show individual responses
+  geom_jitter(width = 0.16, alpha = 0.35, size = 1.5) +
+
+  # Show medians and quartiles without duplicating outliers
+  geom_boxplot(
+    width = 0.42,
+    outlier.shape = NA,
+    alpha = 0.18,
+    linewidth = 0.8
+  ) +
+
+  # Mark each group mean
+  stat_summary(
+    fun = mean,
+    geom = "point",
+    shape = 23,
+    size = 3.2,
+    fill = "white",
+    color = "#B74D3E"
+  ) +
+
+  scale_y_continuous(
+    labels = label_dollar(),
+    breaks = seq(0, 2000, 250)) +
+  scale_color_manual(
+    values = c(
+      "International" = "#1B7F79",
+      "Domestic" = "#3B6EA5")
+  ) +
+  guides(color = "none") +
+  labs(
+    x = NULL,
+    y = "Reported weekly rent (AUD)") +
+  coord_flip() +
+  theme_report_dark
+```
+
+@fig-rq2 suggests higher weekly rent among International respondents, with some high values in both groups.
+
+**H - Hypotheses** Let $\mu_I$ and $\mu_D$ be the population mean weekly rents for International and Domestic rent-paying students.
+
+$$H_0:\mu_I-\mu_D=0;\qquad H_1:\mu_I-\mu_D\neq0$$
+
+**A - Assumptions** The groups are treated as independent. Rent is right-skewed, but both samples are reasonably large (`r sum(rq2_data$student_type == "International")` International; `r sum(rq2_data$student_type == "Domestic")` Domestic), so inference about the means is reasonably robust. Welch's test does not assume equal variances.
+
+**T - Test statistic**
+
+$$T=\frac{\bar X_I-\bar X_D}{\sqrt{s_I^2/n_I+s_D^2/n_D}}.$$
+
+```{r}
+#| label: rq2-test-code
+#| results: hide
+
+# Welch's t-test
+rq2_test <- t.test(
+  weekly_rent ~ student_type,
+  data = rq2_data,
+  alternative = "two.sided",
+  var.equal = FALSE
+)
+```
+
+Observed $t_0=$ `r round(unname(rq2_test$statistic), 3)`, with $df=$ `r round(unname(rq2_test$parameter), 3)`.
+
+**P - p-value** The p-value is `r p_fmt(rq2_test$p.value)`. At the 5% level, there is evidence that mean weekly rent differs between International and Domestic rent-paying respondents.
+
+**C - Conclusion** International respondents reported paying an estimated AUD `r round(rq2_difference, 2)` more per week on average (95% CI: AUD `r round(rq2_test$conf.int[1], 2)` to `r round(rq2_test$conf.int[2], 2)`). This may be relevant to IDP’s budgeting and accommodation support. However, student status should not be treated as the cause of the difference because housing type, location and other factors were not measured, and rent was self-reported.
+
+## Commute time and revision lecture access
+
+**Among International students, does mean one-way commute time differ between students accessing the revision lecture remotely and on campus?**
+
+Longer commutes may make remote revision lectures more appealing. For IDP, comparing commute times across access modes may show whether travel burden is related to study access.
+
+Remote combines Live-stream and Recording; On-campus means Live on campus. “Other” was excluded because its location was unclear.
+
+```{r}
+
+# Keep International students with usable commute and access data
+rq3_data <- survey |>
+  filter(
+    student_type == "International",
+    !is.na(delivery_location),
+    is.finite(commute_min),
+    commute_min >= 0
+  ) |>
+  mutate(
+    # Set a consistent order for the two access groups
+    delivery_location = factor(
+      delivery_location,
+      levels = c("Remote", "On-campus"))
+  )
+```
+
+```{r}
+#| label: fig-rq3-boxplot
+#| fig-cap: "One-way commute time by revision lecture access mode among International students. Points show individual responses, boxes show the median and interquartile range, and diamonds show group means."
+#| fig-width: 8
+#| fig-height: 4.5
+
+# Compare commute-time distributions between access groups
+rq3_data |>
+  ggplot(
+    aes(
+      x = delivery_location,
+      y = commute_min,
+      color = delivery_location
+    )
+  ) +
+  
+  # Show individual responses
+  geom_jitter(
+    width = 0.16,
+    alpha = 0.35,
+    size = 1.5
+  ) +
+
+  # Show medians and quartiles without duplicating outliers
+  geom_boxplot(
+    width = 0.42,
+    outlier.shape = NA,
+    alpha = 0.18,
+    linewidth = 0.8
+  ) +
+
+  # Mark each group mean
+  stat_summary(
+    fun = mean,
+    geom = "point",
+    shape = 23,
+    size = 3.2,
+    fill = "white",
+    color = "#B74D3E"
+  ) +
+
+  scale_color_manual(
+    values = c(
+      "Remote" = "#1B7F79",
+      "On-campus" = "#3B6EA5")
+  ) +
+  guides(color = "none") +
+  labs(
+    x = NULL,
+    y = "One-way commute time (minutes)") +
+  coord_flip() +
+  theme_report_dark
+```
+
+@fig-rq3-boxplot shows considerable overlap between the two groups, although Remote students generally had longer commute times.
+
+**H - Hypotheses** Let $\mu_R$ and $\mu_C$ be the population mean one-way commute times for Remote and On-campus International students, respectively.
+
+$$
+H_0: \mu_R - \mu_C = 0 \qquad
+H_1: \mu_R - \mu_C \neq 0
+$$
+
+**A - Assumptions** Observations are treated as independent. The permutation test also assumes the Remote and On-campus labels are exchangeable under $H_0$. Since access mode was self-selected, this assumption may not hold perfectly.
+
+**T - Test statistic** We use the difference in sample mean commute times,
+
+$$
+T_0 = \bar{X}_{\text{Remote}} - \bar{X}_{\text{On-campus}}
+$$
+
+```{r}
+
+# Calculate the observed difference in mean commute time
+rq3_observed <- with(
+  rq3_data,
+  mean(commute_min[delivery_location == "Remote"]) -
+    mean(commute_min[delivery_location == "On-campus"])
+)
+```
+
+The observed difference was `r round(rq3_observed, 2)` minutes (Remote − On-campus). Under $H_0$, the access labels were shuffled 10,000 times and the difference in means recalculated.
+
+```{r}
+
+# Make the permutation results reproducible
+set.seed(2002)
+
+# Generate 10,000 differences in means under the null hypothesis
+B <- 10000
+
+rq3_perm <- replicate(B, {
+  shuffled_group <- sample(rq3_data$delivery_location)
+
+  mean(rq3_data$commute_min[shuffled_group == "Remote"]) -
+    mean(rq3_data$commute_min[shuffled_group == "On-campus"])
+})
+```
+
+```{r}
+#| label: fig-rq3-permutation
+#| fig-cap: "Permutation distribution of the difference in mean commute time under the null hypothesis."
+#| fig-width: 8
+#| fig-height: 4.5
+
+# Put the permutation statistics into a data frame for plotting
+rq3_perm_df <- data.frame(statistic = rq3_perm)
+
+# Plot the null distribution and observed two-sided cut-offs
+rq3_perm_df |>
+  ggplot() +
+  aes(x = statistic) +
+  geom_histogram(
+    bins = 40,
+    fill = "#93B7BE",
+    color = "white"
+  ) +
+  geom_vline(
+    xintercept = c(-abs(rq3_observed), abs(rq3_observed)),
+    color = "#B23A48",
+    linetype = "dashed",
+    linewidth = 1
+  ) +
+  labs(
+    x = "Difference in mean commute time (minutes)",
+    y = "Frequency") +
+  theme_report_dark
+```
+
+@fig-rq3-permutation shows the null distribution, with the dashed lines marking differences as extreme as the observed statistic in either direction.
+
+```{r}
+
+# Calculate the two-sided Monte Carlo p-value
+rq3_p <- mean(abs(rq3_perm) >= abs(rq3_observed))
+```
+
+**P - p-value** The two-sided Monte Carlo p-value was `r round(rq3_p, 4)`.
+
+**C - Conclusion** We do not reject $H_0$. There is insufficient evidence that mean commute time differs between the two groups. Because access mode was self-selected, this should not be interpreted causally. For IDP, this sample does not show a clear link between commute time and revision-lecture access.
+
+# Conclusion and recommendations
+
+Overall, both groups reported high academic aspirations, although their grade distributions differed. International students can still face adjustment challenges in unfamiliar education systems, so academic-transition support remains relevant [@smithkhawaja2011]. International rent-payers also reported higher weekly rent, a practical concern given evidence that housing insecurity and unaffordability can increase anxiety about study [@hastings2023]. We found no clear evidence that commute time differed by revision-lecture access mode, although transport and time barriers can still limit campus participation [@allenfarber2018].
+
+These results come from a voluntary class survey, so they are exploratory rather than causal or representative. A broader IDP survey with clearer rent and travel questions would provide a stronger basis for support decisions.
+
+# Ethics
+
+We followed the ISI Declaration on Professional Ethics by reporting results objectively, stating assumptions and limitations, and avoiding causal claims from observational data [@isi2023ethics]. We also avoided stereotyping International or Domestic students from group averages and retained unusual observations unless there was a clear reason to exclude them.
+
+# AI Usage Statement
+
+ChatGPT was used to support editing and review of the report, including code, figures and literature searches. The group checked the final analyses, results, citations and interpretations against the data and course materials.
+
+# References
